@@ -78,6 +78,8 @@ def backtest(data):
     max_equity = initial_cash  # 用于计算最大回撤
     drawdowns = []  # 存储每次回撤
 
+    filter_code = []
+
     trade_count = 0  # 总交易次数
     win_trades = 0  # 盈利交易次数
     profit_list = []  # 记录每笔交易盈亏
@@ -93,7 +95,8 @@ def backtest(data):
             '日期': current_date, '现金余额': cash, '持仓股票代码': None,
             '买入/卖出价格': None, '买入/卖出方向': None, '持仓数量': position,
             '持仓市值': 0, '当日总资产': cash, '交易利润': None, '持股收益': None,
-            '当天开盘价': None, '当天收盘价': None, '当天五日均线': None, '前一天收盘价': None
+            '开盘价': None, '收盘价': None, '五日均线': None, '昨收价': None,
+            '符合条件的股票代码':filter_code
         }
 
         can_trade = True
@@ -101,9 +104,11 @@ def backtest(data):
         # 卖出逻辑
         if holding and can_trade:
             holding_data = data[(data['trade_date'] == current_date) & (data['ts_code'] == holding)]
-            if not holding_data.empty:
-                if holding_data.iloc[0]['close'] < holding_data.iloc[0]['open']:
-                    sell_price = (holding_data.iloc[0]['open'] + holding_data.iloc[0]['close']) / 2
+            previous_day_holding_data = data[(data['ts_code'] == holding) & (data['trade_date'] == previous_date)]
+
+            if not holding_data.empty and not previous_day_holding_data.empty:
+                if holding_data.iloc[0]['close'] < holding_data.iloc[0]['open'] and holding_data.iloc[0]['close']< holding_data.iloc[0]['ma5']:
+                    sell_price = holding_data.iloc[0]['close']
                     profit = position * (sell_price - buy_price)
                     profit_pct = profit / (position * buy_price) * 100
                     cash += position * sell_price
@@ -117,19 +122,23 @@ def backtest(data):
                         '买入/卖出价格': sell_price,
                         '买入/卖出方向': '卖出',
                         '交易利润': f"{profit:.2f}（{profit_pct:.2f}%）",
-                        '当天开盘价': holding_data.iloc[0]['open'],
-                        '当天收盘价': holding_data.iloc[0]['close'],
-                        '当天五日均线': holding_data.iloc[0]['ma5'],
-                        '前一天收盘价': holding_data.iloc[0]['pre_close'],
+                        '开盘价': holding_data.iloc[0]['open'],
+                        '收盘价': holding_data.iloc[0]['close'],
+                        '五日均线': holding_data.iloc[0]['ma5'],
+                        '昨收价': holding_data.iloc[0]['pre_close'],
                         '现金余额': cash
                     })
                     holding = None
                     can_trade = False
+            else:
+                print("selling-error")
+
 
         # 买入逻辑 - 基于前一日的成交量变化率
         if not holding and can_trade:
             # 获取前一日的成交量变化率大于 400% 的股票
             potential_stocks = data[(data['trade_date'] == previous_date) & (data['amount_change'] > 4)]
+
             for ts_code, group in potential_stocks.groupby('ts_code'):
                 current_day_data = data[(data['ts_code'] == ts_code) & (data['trade_date'] == current_date)]
                 previous_day_data = data[(data['ts_code'] == ts_code) & (data['trade_date'] == previous_date)]
@@ -137,11 +146,12 @@ def backtest(data):
                     current_day_open = current_day_data.iloc[0]['open']
                     current_day_close = current_day_data.iloc[0]['close']
                     current_day_ma5 = current_day_data.iloc[0]['ma5']
-
+                    previous_day_open = previous_day_data.iloc[0]['open']
                     previous_day_close = previous_day_data.iloc[0]['close']
                     previous_day_ma5=previous_day_data.iloc[0]['ma5']
 
-                    if current_day_open > current_day_ma5 and previous_day_close > previous_day_ma5:###todo：改为连续前几天收盘价大于五日线
+                    if (current_day_open > previous_day_ma5 and previous_day_close > previous_day_ma5
+                            and previous_day_close>previous_day_open):###todo：改为连续前几天收盘价大于五日线
                         buy_price = current_day_open
                         max_hands = int(cash // (buy_price * 100))
                         if max_hands > 0:
@@ -152,9 +162,9 @@ def backtest(data):
                                 '买入/卖出价格': buy_price,
                                 '买入/卖出方向': '买入',
                                 '持仓数量': position,
-                                '当天开盘价': current_day_open,
-                                '当天收盘价': current_day_close,
-                                '当天五日均线': current_day_ma5,
+                                '开盘价': current_day_open,
+                                '收盘价': current_day_close,
+                                '五日均线': current_day_ma5,
                                 '现金余额': cash
                             })
                             holding = ts_code
@@ -171,14 +181,22 @@ def backtest(data):
                 daily_result.update({
                     '持仓市值': holding_value,
                     '当日总资产': cash + holding_value,
-                    '持股收益': f"{holding_profit:.2f}（{holding_profit_pct:.2f}%）"
+                    '持股收益': f"{holding_profit:.2f}（{holding_profit_pct:.2f}%）",
+                    '开盘价': holding_data.iloc[0]['open'],
+                    '收盘价': holding_data.iloc[0]['close'],
+                    '五日均线': holding_data.iloc[0]['ma5'],
+                    '昨收价': holding_data.iloc[0]['pre_close'],
                 })
                 prev_day_assets = holding_value
             else:  # 假设当天停牌，数据沿用上一交易日
                 daily_result.update({
                     '持仓市值': holding_value,
                     '当日总资产': cash + holding_value,
-                    '持股收益': f"0（0%）"
+                    '持股收益': f"0（0%）",
+                    '开盘价': holding_data.iloc[0]['open'],
+                    '收盘价': holding_data.iloc[0]['close'],
+                    '五日均线': holding_data.iloc[0]['ma5'],
+                    '昨收价': holding_data.iloc[0]['pre_close'],
                 })
 
         else:
